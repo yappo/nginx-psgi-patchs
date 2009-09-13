@@ -1,9 +1,10 @@
+Only in nginx-0.7.61: .git
 Only in nginx-0.7.61: Makefile
 Only in nginx-0.7.61: objs
 diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/http/modules/perl/nginx.pm
 --- nginx-0.7.61-original/src/http/modules/perl/nginx.pm	2009-09-13 12:55:21.000000000 +0900
-+++ nginx-0.7.61/src/http/modules/perl/nginx.pm	2009-09-13 12:46:26.000000000 +0900
-@@ -99,6 +99,71 @@
++++ nginx-0.7.61/src/http/modules/perl/nginx.pm	2009-09-13 15:04:28.000000000 +0900
+@@ -99,6 +99,65 @@
  }
  
  
@@ -15,27 +16,21 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/h
 +    $env{'psig.inputs'}   = undef; # XXX tied?
 +    $env{'psig.errors'}   = undef; # XXX
 +    $env{REQUEST_METHOD} = $r->request_method;
-+    $env{SCRIPT_NAME}    = $r->uri;
-+    $env{QUERY_STRING}   = $r->args;
++    $env{SCRIPT_NAME}    = $r->uri  || '/';
++    $env{QUERY_STRING}   = $r->args || '';
 +    $env{SERVER_NAME}    = 'nginx';
 +
 +    $env{REMOTE_ADDR}    = $r->remote_addr;
 +
 +    # fetch headers;
-+    my $max = $r->headers();
-+    my @headers;
-+    for my $c (0..($max)) {
-+        push @headers, $r->header_by_n($c);
-+    }
-+
-+    for my $name (@headers) {
-+        next unless $name;
-+        my $v = $r->header_in($name);
++    my @headers = $r->headers;
++    while (my($name, $value) = splice @headers, 0, 2) {
++        next unless $name && $value;
 +        $name =~ s/-/_/g;
 +        $name = uc $name;
 +        $name = "HTTP_$name" unless $name eq 'CONTENT_LENGTH' || $name eq 'CONTENT_TYPE';
 +
-+        $env{$name} = $v;
++        $env{$name} = $value;
 +    }
 +
 +    my $res;
@@ -77,74 +72,25 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/h
  
 diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.xs nginx-0.7.61/src/http/modules/perl/nginx.xs
 --- nginx-0.7.61-original/src/http/modules/perl/nginx.xs	2009-09-13 12:55:21.000000000 +0900
-+++ nginx-0.7.61/src/http/modules/perl/nginx.xs	2009-09-12 20:50:10.000000000 +0900
-@@ -213,6 +213,93 @@
++++ nginx-0.7.61/src/http/modules/perl/nginx.xs	2009-09-13 15:00:41.000000000 +0900
+@@ -213,6 +213,37 @@
  
      ST(0) = TARG;
  
 +void
 +headers(r)
-+    CODE:
++    PPCODE:
 +
-+    dXSTARG;
 +    ngx_http_request_t     *r;
-+    ngx_str_t               value;
 +    ngx_uint_t              i, c;
 +    ngx_table_elt_t        *h;
 +    ngx_list_part_t        *part;
 +
 +    ngx_http_perl_set_request(r);
 +
++    c = 0;
 +    part = &r->headers_in.headers.part;
 +    h = part->elts;
-+    c = 0;
-+    for (i = 0; /* void */ ; i++) {
-+        if (i >= part->nelts) {
-+            if (part->next == NULL) {
-+                break;
-+            }
-+
-+            part = part->next;
-+            h = part->elts;
-+            i = 0;
-+        }
-+	c++;
-+    }
-+
-+    value.data = ngx_pcalloc(r->pool, 10);
-+    value.len  = ngx_sprintf(value.data, "%d", c) - value.data;
-+    ngx_http_perl_set_targ(value.data, value.len);
-+
-+    ST(0) = TARG;
-+
-+void
-+header_by_n(r, key)
-+    CODE:
-+
-+    dXSTARG;
-+    ngx_http_request_t     *r;
-+    SV                      *key;
-+    ngx_str_t               value;
-+    ngx_uint_t              i, c;
-+    u_char                 *p;
-+    STRLEN                  len;
-+    ngx_table_elt_t        *h;
-+    ngx_list_part_t        *part;
-+
-+    ngx_http_perl_set_request(r);
-+
-+    key = ST(1);
-+
-+    if (SvROK(key) && SvTYPE(SvRV(key)) == SVt_PV) {
-+        key = SvRV(key);
-+    }
-+
-+    p = (u_char *) SvPV(key, len);
-+
-+    part = &r->headers_in.headers.part;
-+    h = part->elts;
-+    c = 0;
-+    value.data = ngx_pcalloc(r->pool, 10);
 +    for (i = 0; /* void */ ; i++) {
 +        if (i >= part->nelts) {
 +            if (part->next == NULL) {
@@ -156,19 +102,12 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.xs nginx-0.7.61/src/h
 +            i = 0;
 +        }
 +
-+	c++;
-+        value.len  = ngx_sprintf(value.data, "%d", c) - value.data;
-+
-+        if (len != value.len
-+            || ngx_strcasecmp(p, value.data) != 0)
-+        {
-+            continue;
-+        }
-+
-+        ngx_http_perl_set_targ(h[i].key.data, h[i].key.len);
++        // use mXPUSHp idea by gfx++
++	mXPUSHp((char *)h[i].key.data, h[i].key.len);
++	mXPUSHp((char *)h[i].value.data, h[i].value.len);
++	c += 2;
 +    }
-+
-+    ST(0) = TARG;
++    XSRETURN(c);
  
  void
  header_in(r, key)
