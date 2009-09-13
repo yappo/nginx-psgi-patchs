@@ -1,6 +1,3 @@
-Only in nginx-0.7.61: .git
-Only in nginx-0.7.61: Makefile
-Only in nginx-0.7.61: objs
 diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/http/modules/perl/nginx.pm
 --- nginx-0.7.61-original/src/http/modules/perl/nginx.pm	2009-09-13 12:55:21.000000000 +0900
 +++ nginx-0.7.61/src/http/modules/perl/nginx.pm	2009-09-13 15:04:28.000000000 +0900
