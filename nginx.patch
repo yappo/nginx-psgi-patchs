@@ -1,21 +1,56 @@
 diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/http/modules/perl/nginx.pm
 --- nginx-0.7.61-original/src/http/modules/perl/nginx.pm	2009-09-13 12:55:21.000000000 +0900
-+++ nginx-0.7.61/src/http/modules/perl/nginx.pm	2009-09-13 15:04:28.000000000 +0900
-@@ -99,6 +99,65 @@
++++ nginx-0.7.61/src/http/modules/perl/nginx.pm	2009-09-30 22:16:51.000000000 +0900
+@@ -98,6 +98,99 @@
+     $r->flush;
  }
  
- 
++my $H;
 +sub psgi_handler {
 +    my($r, $handler, ) = @_;
 +
++    $H = $handler;
++    my $ret = $r->has_request_body(\&_psgi_handler_read_body);
++    unless ($ret) {
++        return _psgi_handler($r, $handler, undef);
++    }
++    return OK;
++}
++
++sub _psgi_handler_read_body {
++    my $r = shift;
++
++    my $fh;
++    my $body = $r->request_body;
++    if (defined $body) {
++        unless (open $fh, '<', \$body) {
++            warn "read body: $!";
++            return HTTP_INTERNAL_SERVER_ERROR;
++        }
++    } else {
++        my $file = $r->request_body_file;
++        if ($file && -f $file) {
++            unless (open $fh, '<', $file) {
++                warn "$file: $!";
++                return HTTP_INTERNAL_SERVER_ERROR;
++            }
++        }
++    }
++    _psgi_handler($r, $H, $fh);
++}
++
++sub _psgi_handler {
++    my($r, $handler, $input, ) = @_;
++
 +    my %env;
-+    $env{'psig.version'} = [1,0];
-+    $env{'psig.inputs'}   = undef; # XXX tied?
-+    $env{'psig.errors'}   = undef; # XXX
-+    $env{REQUEST_METHOD} = $r->request_method;
-+    $env{SCRIPT_NAME}    = $r->uri  || '/';
-+    $env{QUERY_STRING}   = $r->args || '';
-+    $env{SERVER_NAME}    = 'nginx';
++    $env{'psgi.version'}    = [1,0];
++    $env{'psgi.url_scheme'} = 'http';
++    $env{'psgi.input'}      = $input;
++    $env{'psgi.errors'}     = *STDERR;
++    $env{REQUEST_METHOD}    = $r->request_method;
++    $env{SCRIPT_NAME}       = $r->uri  || '/';
++    $env{QUERY_STRING}      = $r->args || '';
++    $env{SERVER_NAME}       = 'nginx';
 +
 +    $env{REMOTE_ADDR}    = $r->remote_addr;
 +
@@ -63,10 +98,9 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/h
 +
 +    return $res->[0];
 +}
-+
+ 
  1;
  __END__
- 
 diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.xs nginx-0.7.61/src/http/modules/perl/nginx.xs
 --- nginx-0.7.61-original/src/http/modules/perl/nginx.xs	2009-09-13 12:55:21.000000000 +0900
 +++ nginx-0.7.61/src/http/modules/perl/nginx.xs	2009-09-13 15:00:41.000000000 +0900
