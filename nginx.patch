@@ -1,16 +1,14 @@
 diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/http/modules/perl/nginx.pm
 --- nginx-0.7.61-original/src/http/modules/perl/nginx.pm	2009-09-13 12:55:21.000000000 +0900
-+++ nginx-0.7.61/src/http/modules/perl/nginx.pm	2009-09-30 22:16:51.000000000 +0900
-@@ -98,6 +98,99 @@
++++ nginx-0.7.61/src/http/modules/perl/nginx.pm	2009-09-30 23:19:46.000000000 +0900
+@@ -98,6 +98,97 @@
      $r->flush;
  }
  
-+my $H;
 +sub psgi_handler {
 +    my($r, $handler, ) = @_;
 +
-+    $H = $handler;
-+    my $ret = $r->has_request_body(\&_psgi_handler_read_body);
++    my $ret = $r->has_request_body(sub{ _psgi_handler_read_body($r, $handler) });
 +    unless ($ret) {
 +        return _psgi_handler($r, $handler, undef);
 +    }
@@ -18,7 +16,7 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/h
 +}
 +
 +sub _psgi_handler_read_body {
-+    my $r = shift;
++    my($r, $handler, ) = @_;
 +
 +    my $fh;
 +    my $body = $r->request_body;
@@ -36,7 +34,7 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/h
 +            }
 +        }
 +    }
-+    _psgi_handler($r, $H, $fh);
++    _psgi_handler($r, $handler, $fh);
 +}
 +
 +sub _psgi_handler {
@@ -103,7 +101,7 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.pm nginx-0.7.61/src/h
  __END__
 diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.xs nginx-0.7.61/src/http/modules/perl/nginx.xs
 --- nginx-0.7.61-original/src/http/modules/perl/nginx.xs	2009-09-13 12:55:21.000000000 +0900
-+++ nginx-0.7.61/src/http/modules/perl/nginx.xs	2009-09-13 15:00:41.000000000 +0900
++++ nginx-0.7.61/src/http/modules/perl/nginx.xs	2009-09-30 23:22:20.000000000 +0900
 @@ -213,6 +213,37 @@
  
      ST(0) = TARG;
@@ -142,9 +140,25 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/nginx.xs nginx-0.7.61/src/h
  
  void
  header_in(r, key)
+@@ -362,6 +393,7 @@
+ 
+     ctx = ngx_http_get_module_ctx(r, ngx_http_perl_module);
+     ctx->next = SvRV(ST(1));
++    SvREFCNT_inc(ctx->next); /* It is not go to DESTROY when reading long request body. */
+ 
+     r->request_body_in_single_buf = 1;
+     r->request_body_in_persistent_file = 1;
+@@ -942,6 +974,7 @@
+     ctx = ngx_http_get_module_ctx(r, ngx_http_perl_module);
+ 
+     ctx->next = SvRV(ST(2));
++    SvREFCNT_inc(ctx->next); /* It is not go to DESTROY when reading long request body. */
+ 
+     ngx_add_timer(r->connection->write, sleep);
+ 
 diff -ur nginx-0.7.61-original/src/http/modules/perl/ngx_http_perl_module.c nginx-0.7.61/src/http/modules/perl/ngx_http_perl_module.c
 --- nginx-0.7.61-original/src/http/modules/perl/ngx_http_perl_module.c	2009-09-13 12:55:21.000000000 +0900
-+++ nginx-0.7.61/src/http/modules/perl/ngx_http_perl_module.c	2009-09-13 12:22:10.000000000 +0900
++++ nginx-0.7.61/src/http/modules/perl/ngx_http_perl_module.c	2009-09-30 23:20:55.000000000 +0900
 @@ -21,6 +21,7 @@
  typedef struct {
      SV                *sub;
@@ -175,16 +189,18 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/ngx_http_perl_module.c ngin
      { ngx_string("perl_set"),
        NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2,
        ngx_http_perl_set,
-@@ -188,7 +197,7 @@
+@@ -188,8 +197,8 @@
  void
  ngx_http_perl_handle_request(ngx_http_request_t *r)
  {
 -    SV                         *sub;
+-    ngx_int_t                   rc;
 +    SV                         *sub, **asv;
-     ngx_int_t                   rc;
++    ngx_int_t                   rc, sub_is_next;
      ngx_str_t                   uri, args, *handler;
      ngx_http_perl_ctx_t        *ctx;
-@@ -216,6 +225,7 @@
+     ngx_http_perl_loc_conf_t   *plcf;
+@@ -216,20 +225,37 @@
      dTHXa(pmcf->perl);
      PERL_SET_CONTEXT(pmcf->perl);
  
@@ -192,24 +208,39 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/ngx_http_perl_module.c ngin
      if (ctx->next == NULL) {
          plcf = ngx_http_get_module_loc_conf(r, ngx_http_perl_module);
          sub = plcf->sub;
-@@ -227,7 +237,15 @@
+         handler = &plcf->handler;
+-
++        sub_is_next = 0;
+     } else {
+         sub = ctx->next;
+         handler = &ngx_null_name;
          ctx->next = NULL;
-     }
- 
--    rc = ngx_http_perl_call_handler(aTHX_ r, pmcf->nginx, sub, NULL, handler,
++        sub_is_next = 1;
++    }
++
 +    if (plcf != NULL && plcf->psgi_handler.data != NULL) {
 +        asv = ngx_pcalloc(r->pool, sizeof(SV *) * 2);
 +	asv[0] = (SV *) 1;
 +        asv[1] = newSVpvn((char *) plcf->psgi_handler.data, plcf->psgi_handler.len);
 +    } else {
 +        asv = NULL;
-+    }
-+
+     }
+ 
+-    rc = ngx_http_perl_call_handler(aTHX_ r, pmcf->nginx, sub, NULL, handler,
 +    rc = ngx_http_perl_call_handler(aTHX_ r, pmcf->nginx, sub, asv, handler,
                                      NULL);
  
++    if (sub_is_next == 1) {
++        /*
++         * Because SvREFCNT_inc by nginx->sleep and  nginx->has_request_body
++         */
++        SvREFCNT_dec(sub);
++    }
++
      }
-@@ -944,7 +962,9 @@
+ 
+     if (rc == NGX_DONE) {
+@@ -944,7 +970,9 @@
          }
      }
  
@@ -220,7 +251,7 @@ diff -ur nginx-0.7.61-original/src/http/modules/perl/ngx_http_perl_module.c ngin
  
      {
  
-@@ -973,6 +993,61 @@
+@@ -973,6 +1001,61 @@
  
  
  static char *
